@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Pull files from a remote environment (public files unless REMOTE_FILES_PATHS says otherwise)
+## Usage: get-files [environment]
+## Example: "ddev get-files"
+
+set -euo pipefail
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+ENV_ARG=""
+for arg in "$@"; do
+  case "${arg}" in
+    -*) usage ;;
+    *) [ -z "${ENV_ARG}" ] || usage; ENV_ARG="${arg}" ;;
+  esac
+done
+
+load_config
+use_env "${ENV_ARG}"
+
+read -r -a FILES_PATHS <<< "$(setting FILES_PATHS web/sites/default/files)"
+for path in "${FILES_PATHS[@]}"; do
+  echo "Syncing ${path}/ from ${SITE_ENV}..."
+  mkdir -p "${LOCAL_BASE}/${path}"
+  rsync -av -e "ssh -p ${SSH_PORT}" "${REMOTE}:${REMOTE_PATH}/${path}/" "${LOCAL_BASE}/${path}/"
+done

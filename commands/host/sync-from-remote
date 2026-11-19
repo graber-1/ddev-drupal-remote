@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Pull a remote environment's config into its config folder; --database also imports its database, --files also syncs its files
+## Usage: sync-from-remote [environment] [--database|--files]
+## Example: "ddev sync-from-remote" (config only), "ddev sync-from-remote --database" (config and database), "ddev sync-from-remote --files" (config, database and files)
+
+set -euo pipefail
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+ENV_ARG=""
+SYNC_DATABASE=0
+SYNC_FILES=0
+for arg in "$@"; do
+  case "${arg}" in
+    --database) SYNC_DATABASE=1 ;;
+    --files) SYNC_DATABASE=1; SYNC_FILES=1 ;;
+    -*) usage ;;
+    *) [ -z "${ENV_ARG}" ] || usage; ENV_ARG="${arg}" ;;
+  esac
+done
+
+load_config
+use_env "${ENV_ARG}"
+
+if [ -n "$(git -C "${LOCAL_BASE}" status --porcelain -- "${CONFIG_DIR}")" ]; then
+  die "${CONFIG_DIR}/ has uncommitted changes — commit or stash them first."
+fi
+
+echo "Exporting config on ${SITE_ENV}..."
+remote_drush config:export -y
+
+echo "Syncing ${CONFIG_DIR}/ from ${SITE_ENV}..."
+rsync -av --checksum --delete -e "ssh -p ${SSH_PORT}" \
+  "${REMOTE}:${REMOTE_PATH}/${CONFIG_DIR}/" "${LOCAL_BASE}/${CONFIG_DIR}/"
+
+if [ "${SYNC_DATABASE}" = 1 ]; then
+  load_db_settings
+  DUMP="$(mktemp -t sync-from-remote).sql.gz"
+  trap 'rm -f "${DUMP}"' EXIT
+
+  echo "Dumping '${DB_NAME}' from ${DB_HOST} via ${REMOTE}..."
+  printf '%s\n' "${DB_PASS}" | remote_ssh \
+    "$(remote_mysql_cmd mysqldump '--single-transaction --quick --no-tablespaces') | gzip -c" > "${DUMP}"
+
+  if [ ! -s "${DUMP}" ]; then
+    die "Dump is empty — aborting import."
+  fi
+
+  echo "Importing into DDEV database '${LOCAL_DB}'..."
+  ddev import-db --database="${LOCAL_DB}" --file="${DUMP}"
+fi
+
+if [ "${SYNC_FILES}" = 1 ]; then
+  echo "Syncing files from ${SITE_ENV}..."
+  "${COMMANDS_DIR}/get-files" "${SITE_ENV}"
+fi
+
+if [ "${SYNC_DATABASE}" = 1 ] && [ "${SITE_ENV}" = "$(current_env)" ]; then
+  echo "Rebuilding Drupal cache..."
+  ddev drush cache:rebuild || true
+fi
+
+echo "Done."

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Show or switch the local environment (each has its own config folder and database)
+## Usage: env [environment]
+## Example: "ddev env" shows the current one, "ddev env dev" switches to dev
+
+set -euo pipefail
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+case "$#:${1:-}" in
+  0:) ;;
+  1:-*) usage ;;
+  1:*) ;;
+  *) usage ;;
+esac
+
+load_config
+
+if [ $# -eq 0 ]; then
+  use_env
+  echo "Current environment: ${SITE_ENV} (config: ${CONFIG_DIR}, database: ${LOCAL_DB})"
+  echo "Available: ${ENVIRONMENTS}"
+  exit 0
+fi
+
+use_env "$1"
+
+if [ "${SITE_ENV}" = "$(current_env)" ]; then
+  echo "Already on ${SITE_ENV}."
+  exit 0
+fi
+
+echo "[1/3] Setting ${ENV_VAR}=${SITE_ENV} in .ddev/.env.web..."
+touch "${WEB_ENV_FILE}"
+{ grep -v "^${ENV_VAR}=" "${WEB_ENV_FILE}" || true; echo "${ENV_VAR}=${SITE_ENV}"; } > "${WEB_ENV_FILE}.tmp"
+mv "${WEB_ENV_FILE}.tmp" "${WEB_ENV_FILE}"
+
+echo "[2/3] Restarting DDEV to apply it..."
+ddev restart
+
+echo "[3/3] Preparing database '${LOCAL_DB}'..."
+ddev mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS \`${LOCAL_DB}\`; GRANT ALL ON \`${LOCAL_DB}\`.* TO 'db'@'%';"
+
+TABLES="$(ddev mysql -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${LOCAL_DB}'")"
+if [ "${TABLES}" = 0 ]; then
+  echo "Database '${LOCAL_DB}' is empty, pull it with: ddev sync-from-remote --database"
+else
+  ddev drush cache:rebuild
+fi
+
+echo "Now on ${SITE_ENV}."

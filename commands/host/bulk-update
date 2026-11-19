@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Sync, update (composer update, updb, cex) and deploy every drupal-remote project next to this one
+## Usage: bulk-update
+## Example: "ddev bulk-update" from ~/sites/a lists ~/sites/*, ~/sites/*/* and ~/sites/*/*/* projects that have this add-on, then asks before updating them
+#
+# Projects are looked up in this project's parent folder and its subfolders (up
+# to 3 levels, not inside other projects). REMOTE_BULK_UPDATE=false in a
+# project's .ddev/.env.drupal-remote leaves it out.
+# A failing step aborts the current project and the run moves on to the next
+# one. Projects that were stopped before the run are stopped again afterwards.
+# Progress and the final summary are also written to bulk-update.log in the
+# scanned folder. Ctrl-C stops the current project (restoring its DDEV state)
+# and skips the rest.
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+if [ $# -gt 0 ]; then
+  usage
+fi
+
+SCAN_ROOT="$(dirname "${LOCAL_BASE}")"
+MANIFEST=".ddev/addon-metadata/drupal-remote/manifest.yaml"
+MAX_DEPTH=3
+LOG="${SCAN_ROOT}/bulk-update.log"
+
+if [[ -t 1 ]]; then
+  BOLD=$'\e[1m' RED=$'\e[31m' GREEN=$'\e[32m' RESET=$'\e[0m'
+fi
+
+# find_projects <dir> <depth>: DDEV projects below <dir>, without descending
+# into projects or hidden, vendor and node_modules folders.
+find_projects() {
+  local dir
+  for dir in "$1"/*/; do
+    dir="${dir%/}"
+    [[ -d "${dir}" ]] || continue
+    case "${dir##*/}" in vendor | node_modules) continue ;; esac
+    if [[ -f "${dir}/.ddev/config.yaml" ]]; then
+      echo "${dir}"
+    elif (( $2 > 1 )); then
+      find_projects "${dir}" $(( $2 - 1 ))
+    fi
+  done
+}
+
+# opted_out <project dir>: whether its config sets REMOTE_BULK_UPDATE=false.
+opted_out() {
+  local value
+  value="$(sed -n 's/^REMOTE_BULK_UPDATE=//p' "$1/.ddev/.env.drupal-remote" 2>/dev/null | tail -n1 | tr -d "\"' ")"
+  [[ "${value}" == false ]]
+}
+
+SITES=()
+SKIPPED=()
+while IFS= read -r dir; do
+  [[ -f "${dir}/${MANIFEST}" ]] || continue
+  if opted_out "${dir}"; then
+    SKIPPED+=("${dir#"${SCAN_ROOT}"/}")
+  else
+    SITES+=("${dir#"${SCAN_ROOT}"/}")
+  fi
+done < <(find_projects "${SCAN_ROOT}" "${MAX_DEPTH}")
+
+if (( ${#SITES[@]} == 0 )); then
+  echo "No projects with the drupal-remote add-on under ${SCAN_ROOT}."
+  exit 0
+fi
+
+echo "Projects under ${SCAN_ROOT}:"
+for i in "${!SITES[@]}"; do
+  printf '  %d. %s\n' $(( i + 1 )) "${SITES[$i]}"
+done
+for site in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
+  echo "  -  ${site} (skipped: REMOTE_BULK_UPDATE=false)"
+done
+read -r -p "Sync, update and deploy these ${#SITES[@]} projects? [y/N] " ANSWER
+if [[ "${ANSWER}" != [yY]* ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
+INTERRUPTED=0
+trap 'INTERRUPTED=1' INT
+
+: > "${LOG}"
+
+# elapsed <start SECONDS>
+elapsed() {
+  local s=$(( SECONDS - $1 ))
+  printf '%d:%02d' $(( s / 60 )) $(( s % 60 ))
+}
+
+# log <color> <message>
+log() {
+  printf '%s\n' "$2" >> "${LOG}"
+  printf '%s%s%s\n' "$1" "$2" "${RESET:-}"
+}
+
+# step <command...>: runs one numbered step of the current site.
+step() {
+  local start=${SECONDS} rc
+  STEP_NO=$(( STEP_NO + 1 ))
+  log "${BOLD:-}" "--> [${STEP_NO}/${STEP_COUNT}] $*"
+  "$@"
+  rc=$?
+  # Commands run through `ddev exec` put the terminal in raw mode, so Ctrl-C
+  # reaches only the container process and shows up here as exit code 130.
+  if (( rc == 130 )); then
+    INTERRUPTED=1
+  fi
+  if (( rc != 0 || INTERRUPTED )); then
+    FAILED_STEP="'$*' (exit ${rc})"
+    log "${RED:-}" "--> FAILED: '$*' (exit ${rc}) after $(elapsed "${start}")"
+    return 1
+  fi
+  log "${GREEN:-}" "--> done in $(elapsed "${start}")"
+}
+
+# update_site <dir relative to SCAN_ROOT>
+update_site() {
+  local started=0 rc
+  STEP_NO=0 STEP_COUNT=5 FAILED_STEP="" STOP_FAILED=0
+
+  if ! cd "${SCAN_ROOT}/$1"; then
+    FAILED_STEP="'cd ${SCAN_ROOT}/$1'"
+    return 1
+  fi
+  if [[ "$(ddev describe -j 2>/dev/null | jq -r '.raw.status')" != running ]]; then
+    started=1
+    STEP_COUNT=6
+  fi
+
+  if (( started )); then
+    step ddev start
+  fi &&
+    # updb and cex must run on a copy of the production database; files
+    # aren't needed, so --database rather than --files.
+    step ddev sync-from-remote --database &&
+    step ddev composer update &&
+    step ddev drush updb -y &&
+    step ddev drush cex -y &&
+    # Give Mutagen time to copy the exported config to the host, which is
+    # where `ddev deploy` rsyncs from.
+    sleep 5 &&
+    step ddev deploy
+  rc=$?
+
+  if (( started )); then
+    log "${BOLD:-}" "--> ddev stop (the site was not running before)"
+    if ! ddev stop; then
+      STOP_FAILED=1
+      log "${RED:-}" "--> FAILED: 'ddev stop'"
+    fi
+  fi
+  return ${rc}
+}
+
+RUN_START=${SECONDS}
+RESULTS=()
+FAILURES=0
+
+for i in "${!SITES[@]}"; do
+  site=${SITES[$i]}
+  if (( INTERRUPTED )); then
+    RESULTS+=("SKIPPED      ${site}")
+    continue
+  fi
+
+  site_start=${SECONDS}
+  log "${BOLD:-}" "==> [$(( i + 1 ))/${#SITES[@]}] ${site}  ($(date '+%H:%M:%S'), run time $(elapsed "${RUN_START}"))"
+  if update_site "${site}"; then
+    result="OK           ${site}"
+  elif (( INTERRUPTED )); then
+    result="INTERRUPTED  ${site}${FAILED_STEP:+ at ${FAILED_STEP}}"
+  else
+    FAILURES=$(( FAILURES + 1 ))
+    result="FAILED       ${site} at ${FAILED_STEP}"
+  fi
+  result+=" ($(elapsed "${site_start}"))"
+  if (( STOP_FAILED )); then
+    result+=", ddev stop failed"
+  fi
+  RESULTS+=("${result}")
+done
+
+log "${BOLD:-}" "==> Summary (total $(elapsed "${RUN_START}"), log: ${LOG})"
+for result in "${RESULTS[@]}"; do
+  case "${result}" in
+    OK*) color=${GREEN:-} ;;
+    SKIPPED*) color="" ;;
+    *) color=${RED:-} ;;
+  esac
+  log "${color}" "    ${result}"
+done
+
+if (( INTERRUPTED )); then
+  exit 130
+fi
+(( FAILURES == 0 ))

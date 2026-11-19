@@ -1,0 +1,27 @@
+# Details about the install.yaml file are at https://ddev.readthedocs.io/en/stable/users/extend/creating-add-ons/
+
+name: drupal-remote
+
+project_files:
+  - .env.drupal-remote.example
+  - commands/host/.drupal-remote.sh
+  - commands/host/bulk-update
+  - commands/host/deploy
+  - commands/host/env
+  - commands/host/get-files
+  - commands/host/push-db
+  - commands/host/sync-from-remote
+
+global_files: []
+
+ddev_version_constraint: '>= v1.24.10'
+
+post_install_actions:
+  - |
+    #ddev-description:Create .ddev/.env.drupal-remote unless it exists
+    if [ ! -f .env.drupal-remote ]; then
+      grep -v '#ddev-generated' .env.drupal-remote.example > .env.drupal-remote
+      echo "Created .ddev/.env.drupal-remote, fill it in before using the commands."
+    fi
+
+removal_actions: []

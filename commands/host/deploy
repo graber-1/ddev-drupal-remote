@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Rsync the code to a remote environment and run drush deploy there
+## Usage: deploy [environment] [--dry-run]
+## Example: "ddev deploy", "ddev deploy --dry-run" to preview what rsync would change
+
+set -euo pipefail
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+ENV_ARG=""
+DRY_RUN=()
+for arg in "$@"; do
+  case "${arg}" in
+    --dry-run) DRY_RUN=(--dry-run) ;;
+    -*) usage ;;
+    *) [ -z "${ENV_ARG}" ] || usage; ENV_ARG="${arg}" ;;
+  esac
+done
+
+load_config
+use_env "${ENV_ARG}"
+DRUSH_DEPLOY="$(setting DEPLOY_DRUSH true)"
+SETTINGS_TARGET="$(setting SETTINGS_TARGET)"
+
+if [ ! -f "${LOCAL_BASE}/${SETTINGS}" ]; then
+  die "Remote settings not found: ${SETTINGS}"
+fi
+if [ "${DRUSH_DEPLOY}" = true ] && [ ! -f "${LOCAL_BASE}/${CONFIG_DIR}/core.extension.yml" ]; then
+  die "No exported config in ${CONFIG_DIR}/, run: ddev drush config:export"
+fi
+
+# Excluded paths are also protected from --delete. files/ is excluded except
+# its .htaccess; P stops --delete removing prod's copy.
+FILTERS=(
+  --exclude '.git/'
+  --exclude '.github/'
+  --exclude '.ddev/'
+  --exclude '.claude/'
+  --exclude '.clinerules'
+  --exclude '.DS_Store'
+  --exclude '*.gz'
+  --filter='P web/sites/default/files/.htaccess'
+  --include 'web/sites/default/files/'
+  --include 'web/sites/default/files/.htaccess'
+  --exclude 'web/sites/default/files/*'
+  --exclude 'web/sites/simpletest/'
+  --exclude '/private_files/'
+  --exclude 'web/.htpasswd'
+)
+read -r -a EXTRA <<< "$(setting DEPLOY_EXCLUDES)"
+for pattern in ${EXTRA[@]+"${EXTRA[@]}"}; do
+  FILTERS+=(--exclude "${pattern}")
+done
+# Each environment has its own settings file, uploaded as SETTINGS_TARGET.
+if [ -n "${SETTINGS_TARGET}" ]; then
+  FILTERS+=(--exclude "/${SETTINGS_TARGET}")
+  for env in ${ENVIRONMENTS}; do
+    FILTERS+=(--exclude "/$(env_settings_file "${env}")")
+  done
+fi
+
+echo "Deploying to ${SITE_ENV} (${REMOTE}:${REMOTE_PATH})..."
+rsync -av --delete ${DRY_RUN[@]+"${DRY_RUN[@]}"} -e "ssh -p ${SSH_PORT}" "${FILTERS[@]}" \
+  "${LOCAL_BASE}/" "${REMOTE}:${REMOTE_PATH}/"
+
+if [ -n "${SETTINGS_TARGET}" ]; then
+  rsync -av ${DRY_RUN[@]+"${DRY_RUN[@]}"} -e "ssh -p ${SSH_PORT}" \
+    "${LOCAL_BASE}/${SETTINGS}" "${REMOTE}:${REMOTE_PATH}/${SETTINGS_TARGET}"
+fi
+
+if [ ${#DRY_RUN[@]} -gt 0 ] || [ "${DRUSH_DEPLOY}" != true ]; then
+  exit 0
+fi
+
+load_db_settings
+if [ "$(remote_table_count)" = 0 ]; then
+  echo "The remote database is empty; publish the local one with: ddev push-db"
+  exit 0
+fi
+remote_drush deploy -y

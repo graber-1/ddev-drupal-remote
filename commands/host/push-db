@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#ddev-generated
+## Description: Push the local database to a remote environment (--files also uploads public files); a non-empty remote database needs --force
+## Usage: push-db [environment] [--force] [--files]
+## Example: "ddev push-db" (empty remote database only), "ddev push-db --force --files" (replace it and upload public files)
+
+set -euo pipefail
+
+# shellcheck source=commands/host/.drupal-remote.sh
+source "$(dirname "${BASH_SOURCE[0]}")/.drupal-remote.sh"
+
+ENV_ARG=""
+FORCE=0
+PUSH_FILES=0
+for arg in "$@"; do
+  case "${arg}" in
+    --force) FORCE=1 ;;
+    --files) PUSH_FILES=1 ;;
+    -*) usage ;;
+    *) [ -z "${ENV_ARG}" ] || usage; ENV_ARG="${arg}" ;;
+  esac
+done
+
+load_config
+use_env "${ENV_ARG}"
+if [ "${SITE_ENV}" != "$(current_env)" ]; then
+  die "The local database is $(current_env)'s; switch first with: ddev env ${SITE_ENV}"
+fi
+load_db_settings
+
+DUMP="$(mktemp -t push-db).sql.gz"
+trap 'rm -f "${DUMP}"' EXIT
+
+TOTAL=$((4 + PUSH_FILES))
+N=0
+step() {
+  N=$((N + 1))
+  echo "[${N}/${TOTAL}, +${SECONDS}s] $1"
+}
+
+step "Checking ${SITE_ENV}..."
+remote_ssh "test -x ${REMOTE_PATH}/vendor/drush/drush/drush" ||
+  die "No code in ${REMOTE_PATH} yet; run 'ddev deploy' first."
+TABLES="$(remote_table_count)"
+if [ "${TABLES}" != 0 ]; then
+  [ "${FORCE}" = 1 ] ||
+    die "Remote database '${DB_NAME}' has ${TABLES} tables — refusing to overwrite. Re-run with --force to replace it."
+  SITE="${REMOTE_PATH##*/}"
+  read -r -p "This replaces ${SITE_ENV}'s database (${TABLES} tables) with the local one. Type ${SITE} to continue: " ANSWER || true
+  [ "${ANSWER:-}" = "${SITE}" ] || die "Aborted."
+fi
+
+step "Dumping the local database (cache, session and log tables as structure only)..."
+# MariaDB 11 prepends a sandbox-mode line that MySQL and older MariaDB clients reject.
+ddev drush sql:dump --structure-tables-key=common |
+  sed '1{/enable the sandbox mode/d;}' |
+  gzip -c > "${DUMP}"
+echo "  $(du -h "${DUMP}" | cut -f1) compressed"
+
+step "Importing into '${DB_NAME}' on ${SITE_ENV}..."
+{ printf '%s\n' "${DB_PASS}"; gunzip -c "${DUMP}"; } | remote_mysql
+echo "  $(remote_table_count) tables on the remote"
+
+if [ "${PUSH_FILES}" = 1 ]; then
+  step "Uploading public files..."
+  rsync -a --stats -e "ssh -p ${SSH_PORT}" \
+    --exclude '/css/' --exclude '/js/' --exclude '/php/' --exclude '/styles/' \
+    "${LOCAL_BASE}/web/sites/default/files/" "${REMOTE}:${REMOTE_PATH}/web/sites/default/files/"
+fi
+
+step "Rebuilding caches on ${SITE_ENV}..."
+remote_drush cache:rebuild
+
+echo "Done in ${SECONDS}s."
