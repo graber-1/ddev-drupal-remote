@@ -180,15 +180,15 @@ project "${R}/.hidden/delta" single.env manifest
 project "${R}/a/b/c/too-deep" single.env manifest
 
 run bash -c "echo n | '${R}/alpha/.ddev/commands/host/bulk-update'"
-check "bulk-update from the top lists projects recursively" eval '[ "${STATUS}" = 1 ] && has "${OUT}" "Projects under ${R}:
+check "bulk-update from the top lists projects recursively" eval '[ "${STATUS}" = 0 ] && has "${OUT}" "Projects under ${R}:
   1. alpha
   2. group/beta
   -  opted-out (skipped: REMOTE_BULK_UPDATE=false)
-Aborted." && not_called "ddev"'
+Nothing done." && not_called "ddev"'
 run bash -c "echo n | '${R}/group/beta/.ddev/commands/host/bulk-update'"
-check "bulk-update from a subfolder lists only its siblings" eval '[ "${STATUS}" = 1 ] && has "${OUT}" "Projects under ${R}/group:
+check "bulk-update from a subfolder lists only its siblings" eval '[ "${STATUS}" = 0 ] && has "${OUT}" "Projects under ${R}/group:
   1. beta
-Aborted."'
+Nothing done."'
 
 echo "${PASSED} passed, ${FAILED} failed"
 (( FAILED == 0 ))

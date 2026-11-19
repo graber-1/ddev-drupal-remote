@@ -77,8 +77,8 @@ for site in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
 done
 read -r -p "Sync, update and deploy these ${#SITES[@]} projects? [y/N] " ANSWER
 if [[ "${ANSWER}" != [yY]* ]]; then
-  echo "Aborted."
-  exit 1
+  echo "Nothing done."
+  exit 0
 fi
 
 INTERRUPTED=0
