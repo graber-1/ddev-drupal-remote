@@ -90,7 +90,7 @@ if ($site_env !== 'live') {
 
 `ddev bulk-update` collects the DDEV projects that have this add-on installed, looking in the parent folder of the project it is run from and in its subfolders. It goes up to 3 levels deep and doesn't descend into projects, hidden folders, `vendor` or `node_modules`. Run from `~/sites/a`, it covers everything under `~/sites`. Run from `~/sites/group/b`, it covers only `~/sites/group`. It lists the projects, asks for confirmation, then for each one:
 
-1. `ddev start` if the project was stopped
+1. `ddev start` if the project was stopped (after a 5-second pause, unless it's the run's first start)
 2. `ddev sync-from-remote --database`
 3. `ddev composer update`
 4. `ddev drush updb -y`

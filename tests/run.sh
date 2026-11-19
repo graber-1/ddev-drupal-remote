@@ -29,7 +29,7 @@ case "${name}:$*" in
 esac
 EOF
 chmod +x "${T}/bin/stub"
-for name in ssh rsync ddev git; do
+for name in ssh rsync ddev git sleep; do
   ln -s stub "${T}/bin/${name}"
 done
 export PATH="${T}/bin:${PATH}"
@@ -189,6 +189,14 @@ run bash -c "echo n | '${R}/group/beta/.ddev/commands/host/bulk-update'"
 check "bulk-update from a subfolder lists only its siblings" eval '[ "${STATUS}" = 0 ] && has "${OUT}" "Projects under ${R}/group:
   1. beta
 Nothing done."'
+
+run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
+check "bulk-update pauses before every ddev start but the run's first" eval '[ "${STATUS}" = 0 ] &&
+  [ "$(grep -B1 "^ddev start$" "${CALLS}")" = "ddev describe -j
+ddev start
+--
+sleep 5
+ddev start" ] && [ "$(grep -c "^ddev deploy$" "${CALLS}")" = 2 ]'
 
 echo "${PASSED} passed, ${FAILED} failed"
 (( FAILED == 0 ))

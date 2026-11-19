@@ -133,7 +133,12 @@ update_site() {
   fi
 
   if (( started )); then
-    step ddev start
+    # Starting right after the previous project's start/stop tends to fail.
+    if (( DDEV_STARTS > 0 )); then
+      sleep 5
+    fi
+    DDEV_STARTS=$(( DDEV_STARTS + 1 ))
+    (( ! INTERRUPTED )) && step ddev start
   fi &&
     # updb and cex must run on a copy of the production database; files
     # aren't needed, so --database rather than --files.
@@ -160,6 +165,7 @@ update_site() {
 RUN_START=${SECONDS}
 RESULTS=()
 FAILURES=0
+DDEV_STARTS=0
 
 for i in "${!SITES[@]}"; do
   site=${SITES[$i]}
