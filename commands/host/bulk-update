@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #ddev-generated
-## Description: Sync, update (composer update, updb, cex) and deploy every drupal-remote project next to this one
+## Description: Sync, update (composer update, updb, cex), deploy, commit and push every drupal-remote project next to this one
 ## Usage: bulk-update
 ## Example: "ddev bulk-update" from ~/sites/a lists ~/sites/*, ~/sites/*/* and ~/sites/*/*/* projects that have this add-on, then asks before updating them
 #
 # Projects are looked up in this project's parent folder and its subfolders (up
 # to 3 levels, not inside other projects). REMOTE_BULK_UPDATE=false in a
 # project's .ddev/.env.drupal-remote leaves it out.
+# A project with uncommitted changes (untracked files included) is not touched;
+# otherwise everything the run changes is committed and pushed after the deploy.
 # A failing step aborts the current project and the run moves on to the next
 # one. Projects that were stopped before the run are stopped again afterwards.
 # Progress and the final summary are also written to bulk-update.log in the
@@ -75,7 +77,7 @@ done
 for site in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
   echo "  -  ${site} (skipped: REMOTE_BULK_UPDATE=false)"
 done
-read -r -p "Sync, update and deploy these ${#SITES[@]} projects? [y/N] " ANSWER
+read -r -p "Sync, update, deploy, commit and push these ${#SITES[@]} projects? [y/N] " ANSWER
 if [[ "${ANSWER}" != [yY]* ]]; then
   echo "Nothing done."
   exit 0
@@ -118,10 +120,31 @@ step() {
   log "${GREEN:-}" "--> done in $(elapsed "${start}")"
 }
 
+# clean_worktree: fails, listing them, if the project has uncommitted changes.
+clean_worktree() {
+  local changes
+  changes="$(git status --porcelain)" || return 1
+  if [[ -n "${changes}" ]]; then
+    echo "Uncommitted changes, commit or stash them first:"
+    printf '%s\n' "${changes}"
+    return 1
+  fi
+}
+
+# commit_updates: commits everything the run changed; the tree was clean before.
+commit_updates() {
+  git add -A || return 1
+  if git diff --cached --quiet; then
+    echo "Nothing to commit."
+    return 0
+  fi
+  git commit -q -m "Bulk automatic updates applied" && git show --stat --format='%h %s' HEAD
+}
+
 # update_site <dir relative to SCAN_ROOT>
 update_site() {
   local started=0 rc
-  STEP_NO=0 STEP_COUNT=5 FAILED_STEP="" STOP_FAILED=0
+  STEP_NO=0 STEP_COUNT=8 FAILED_STEP="" STOP_FAILED=0
 
   if ! cd "${SCAN_ROOT}/$1"; then
     FAILED_STEP="'cd ${SCAN_ROOT}/$1'"
@@ -129,8 +152,9 @@ update_site() {
   fi
   if [[ "$(ddev describe -j 2>/dev/null | jq -r '.raw.status')" != running ]]; then
     started=1
-    STEP_COUNT=6
+    STEP_COUNT=9
   fi
+  step clean_worktree || return 1
 
   if (( started )); then
     # Starting right after the previous project's start/stop tends to fail.
@@ -149,7 +173,9 @@ update_site() {
     # Give Mutagen time to copy the exported config to the host, which is
     # where `ddev deploy` rsyncs from.
     sleep 5 &&
-    step ddev deploy
+    step ddev deploy &&
+    step commit_updates &&
+    step git push
   rc=$?
 
   if (( started )); then

@@ -25,7 +25,8 @@ case "${name}:$*" in
   ssh:*"; mysql "*)
     case "$(cat)" in *"SELECT COUNT"*) echo "${FAKE_TABLES:-5}" ;; esac ;;
   ssh:*mysqldump*) cat > /dev/null; echo dump ;;
-  git:*) printf '%s' "${FAKE_GIT_STATUS:-}" ;;
+  git:*status*) printf '%s' "${FAKE_GIT_STATUS:-}" ;;
+  git:"diff --cached --quiet") exit "${FAKE_GIT_DIFF:-0}" ;;
 esac
 EOF
 chmod +x "${T}/bin/stub"
@@ -192,11 +193,27 @@ Nothing done."'
 
 run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
 check "bulk-update pauses before every ddev start but the run's first" eval '[ "${STATUS}" = 0 ] &&
-  [ "$(grep -B1 "^ddev start$" "${CALLS}")" = "ddev describe -j
+  [ "$(grep -B1 "^ddev start$" "${CALLS}")" = "git status --porcelain
 ddev start
 --
 sleep 5
 ddev start" ] && [ "$(grep -c "^ddev deploy$" "${CALLS}")" = 2 ]'
+check "bulk-update with nothing changed pushes without committing" eval '
+  has "${OUT}" "Nothing to commit." && not_called "git commit" && [ "$(grep -c "^git push$" "${CALLS}")" = 2 ]'
+
+FAKE_GIT_DIFF=1 run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
+check "bulk-update commits the run's changes after deploy, then pushes" eval '[ "${STATUS}" = 0 ] &&
+  [ "$(grep -A4 "^ddev deploy$" "${CALLS}" | head -5)" = "ddev deploy
+git add -A
+git diff --cached --quiet
+git commit -q -m Bulk automatic updates applied
+git show --stat --format=%h %s HEAD" ] && [ "$(grep -c "^git push$" "${CALLS}")" = 2 ]'
+
+FAKE_GIT_STATUS="?? notes.txt" run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
+check "bulk-update leaves projects with uncommitted changes untouched" eval '[ "${STATUS}" = 1 ] &&
+  has "${OUT}" "Uncommitted changes, commit or stash them first:
+?? notes.txt" && has "${OUT}" "FAILED       alpha at '"'"'clean_worktree'"'"' (exit 1)" &&
+  not_called "ddev start" && not_called "ddev stop" && not_called "ddev sync-from-remote"'
 
 echo "${PASSED} passed, ${FAILED} failed"
 (( FAILED == 0 ))

@@ -90,15 +90,17 @@ if ($site_env !== 'live') {
 
 `ddev bulk-update` collects the DDEV projects that have this add-on installed, looking in the parent folder of the project it is run from and in its subfolders. It goes up to 3 levels deep and doesn't descend into projects, hidden folders, `vendor` or `node_modules`. Run from `~/sites/a`, it covers everything under `~/sites`. Run from `~/sites/group/b`, it covers only `~/sites/group`. It lists the projects, asks for confirmation, then for each one:
 
-1. `ddev start` if the project was stopped (after a 5-second pause, unless it's the run's first start)
-2. `ddev sync-from-remote --database`
-3. `ddev composer update`
-4. `ddev drush updb -y`
-5. `ddev drush cex -y`
-6. `ddev deploy`
-7. `ddev stop` if the project was stopped before
+1. Check that the git repo has no uncommitted changes, untracked files included; otherwise the project fails here, untouched
+2. `ddev start` if the project was stopped (after a 5-second pause, unless it's the run's first start)
+3. `ddev sync-from-remote --database`
+4. `ddev composer update`
+5. `ddev drush updb -y`
+6. `ddev drush cex -y`
+7. `ddev deploy`
+8. Commit everything the run changed (`composer.lock`, exported config, files Composer copies in from core) as "Bulk automatic updates applied", then `git push`
+9. `ddev stop` if the project was stopped before
 
-A failing step aborts that project and moves on to the next. Ctrl-C stops the current project and skips the rest. The summary and log are written to `bulk-update.log` in the scanned folder. Because `sync-from-remote` refuses uncommitted config, commit each project's exported config after a run.
+A failing step aborts that project and moves on to the next. Ctrl-C stops the current project and skips the rest. The summary and log are written to `bulk-update.log` in the scanned folder. A rejected push fails the project and leaves the commit local; nothing is force-pushed.
 
 ## Updating
 
