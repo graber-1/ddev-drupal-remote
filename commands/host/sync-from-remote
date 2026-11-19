@@ -37,8 +37,9 @@ rsync -av --checksum --delete -e "ssh -p ${SSH_PORT}" \
 
 if [ "${SYNC_DATABASE}" = 1 ]; then
   load_db_settings
-  DUMP="$(mktemp -t sync-from-remote).sql.gz"
-  trap 'rm -f "${DUMP}"' EXIT
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/sync-from-remote.XXXXXX")"
+  trap 'rm -rf "${TMP}"' EXIT
+  DUMP="${TMP}/db.sql.gz"
 
   echo "Dumping '${DB_NAME}' from ${DB_HOST} via ${REMOTE}..."
   printf '%s\n' "${DB_PASS}" | remote_ssh \
