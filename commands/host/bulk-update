@@ -7,8 +7,9 @@
 # Projects are looked up in this project's parent folder and its subfolders (up
 # to 3 levels, not inside other projects). REMOTE_BULK_UPDATE=false in a
 # project's .ddev/.env.drupal-remote leaves it out.
-# A project with uncommitted changes (untracked files included) is not touched;
-# otherwise everything the run changes is committed and pushed after the deploy.
+# A project with uncommitted changes (untracked files included) or behind its
+# upstream is not touched; otherwise everything the run changes is committed
+# and pushed after the deploy.
 # A failing step aborts the current project and the run moves on to the next
 # one. Projects that were stopped before the run are stopped again afterwards.
 # Progress and the final summary are also written to bulk-update.log in the
@@ -120,13 +121,20 @@ step() {
   log "${GREEN:-}" "--> done in $(elapsed "${start}")"
 }
 
-# clean_worktree: fails, listing them, if the project has uncommitted changes.
-clean_worktree() {
-  local changes
+# check_git: fails, saying why, if the project has uncommitted changes or is
+# behind its upstream, so the deploy and the final push can't go wrong.
+check_git() {
+  local changes behind
   changes="$(git status --porcelain)" || return 1
   if [[ -n "${changes}" ]]; then
     echo "Uncommitted changes, commit or stash them first:"
     printf '%s\n' "${changes}"
+    return 1
+  fi
+  git fetch -q || return 1
+  behind="$(git rev-list --count 'HEAD..@{upstream}')" || return 1
+  if (( behind > 0 )); then
+    echo "${behind} commit(s) behind $(git rev-parse --abbrev-ref '@{upstream}'), pull first."
     return 1
   fi
 }
@@ -138,7 +146,8 @@ commit_updates() {
     echo "Nothing to commit."
     return 0
   fi
-  git commit -q -m "Bulk automatic updates applied" && git show --stat --format='%h %s' HEAD
+  git commit -q -m "Bulk automatic updates applied" &&
+    git --no-pager show --stat --format='%h %s' HEAD
 }
 
 # update_site <dir relative to SCAN_ROOT>
@@ -154,7 +163,7 @@ update_site() {
     started=1
     STEP_COUNT=9
   fi
-  step clean_worktree || return 1
+  step check_git || return 1
 
   if (( started )); then
     # Starting right after the previous project's start/stop tends to fail.

@@ -26,6 +26,8 @@ case "${name}:$*" in
     case "$(cat)" in *"SELECT COUNT"*) echo "${FAKE_TABLES:-5}" ;; esac ;;
   ssh:*mysqldump*) cat > /dev/null; echo dump ;;
   git:*status*) printf '%s' "${FAKE_GIT_STATUS:-}" ;;
+  git:"rev-list --count HEAD..@{upstream}") echo "${FAKE_GIT_BEHIND:-0}" ;;
+  git:"rev-parse --abbrev-ref @{upstream}") echo origin/main ;;
   git:"diff --cached --quiet") exit "${FAKE_GIT_DIFF:-0}" ;;
 esac
 EOF
@@ -193,7 +195,7 @@ Nothing done."'
 
 run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
 check "bulk-update pauses before every ddev start but the run's first" eval '[ "${STATUS}" = 0 ] &&
-  [ "$(grep -B1 "^ddev start$" "${CALLS}")" = "git status --porcelain
+  [ "$(grep -B1 "^ddev start$" "${CALLS}")" = "git rev-list --count HEAD..@{upstream}
 ddev start
 --
 sleep 5
@@ -207,13 +209,18 @@ check "bulk-update commits the run's changes after deploy, then pushes" eval '[ 
 git add -A
 git diff --cached --quiet
 git commit -q -m Bulk automatic updates applied
-git show --stat --format=%h %s HEAD" ] && [ "$(grep -c "^git push$" "${CALLS}")" = 2 ]'
+git --no-pager show --stat --format=%h %s HEAD" ] && [ "$(grep -c "^git push$" "${CALLS}")" = 2 ]'
 
 FAKE_GIT_STATUS="?? notes.txt" run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
 check "bulk-update leaves projects with uncommitted changes untouched" eval '[ "${STATUS}" = 1 ] &&
   has "${OUT}" "Uncommitted changes, commit or stash them first:
-?? notes.txt" && has "${OUT}" "FAILED       alpha at '"'"'clean_worktree'"'"' (exit 1)" &&
-  not_called "ddev start" && not_called "ddev stop" && not_called "ddev sync-from-remote"'
+?? notes.txt" && has "${OUT}" "FAILED       alpha at '"'"'check_git'"'"' (exit 1)" &&
+  not_called "git fetch" && not_called "ddev start" && not_called "ddev stop" && not_called "ddev sync-from-remote"'
+
+FAKE_GIT_BEHIND=2 run bash -c "echo y | '${R}/alpha/.ddev/commands/host/bulk-update'"
+check "bulk-update leaves projects behind their upstream untouched" eval '[ "${STATUS}" = 1 ] &&
+  has "${OUT}" "2 commit(s) behind origin/main, pull first." && has "${OUT}" "FAILED       alpha at '"'"'check_git'"'"' (exit 1)" &&
+  called "git fetch -q" && not_called "ddev start" && not_called "ddev sync-from-remote"'
 
 echo "${PASSED} passed, ${FAILED} failed"
 (( FAILED == 0 ))
